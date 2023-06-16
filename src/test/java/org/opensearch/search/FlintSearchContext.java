@@ -30,9 +30,7 @@
  * GitHub history for details.
  */
 
-package org.opensearch.core;
-
-import static org.opensearch.search.SearchService.CLUSTER_CONCURRENT_SEGMENT_SEARCH_SETTING;
+package org.opensearch.search;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -42,7 +40,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
-import java.util.function.Function;
 import java.util.function.LongSupplier;
 import org.apache.lucene.search.BooleanClause.Occur;
 import org.apache.lucene.search.BooleanQuery;
@@ -50,20 +47,15 @@ import org.apache.lucene.search.BoostQuery;
 import org.apache.lucene.search.Collector;
 import org.apache.lucene.search.CollectorManager;
 import org.apache.lucene.search.FieldDoc;
-import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.Query;
 import org.opensearch.Version;
 import org.opensearch.action.search.SearchShardTask;
 import org.opensearch.action.search.SearchType;
-import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.lucene.search.Queries;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.BigArrays;
-import org.opensearch.common.util.FeatureFlags;
 import org.opensearch.core.common.lease.Releasables;
-import org.opensearch.core.concurrency.OpenSearchRejectedExecutionException;
-import org.opensearch.index.IndexService;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.cache.bitset.BitsetFilterCache;
 import org.opensearch.index.engine.Engine;
@@ -77,11 +69,8 @@ import org.opensearch.index.query.QueryShardContext;
 import org.opensearch.index.search.NestedHelper;
 import org.opensearch.index.shard.IndexShard;
 import org.opensearch.index.similarity.SimilarityService;
-import org.opensearch.search.SearchExtBuilder;
-import org.opensearch.search.SearchShardTarget;
 import org.opensearch.search.aggregations.InternalAggregation;
 import org.opensearch.search.aggregations.SearchContextAggregations;
-import org.opensearch.search.builder.SearchSourceBuilder;
 import org.opensearch.search.collapse.CollapseContext;
 import org.opensearch.search.dfs.DfsSearchResult;
 import org.opensearch.search.fetch.FetchPhase;
@@ -93,7 +82,7 @@ import org.opensearch.search.fetch.subphase.FetchSourceContext;
 import org.opensearch.search.fetch.subphase.ScriptFieldsContext;
 import org.opensearch.search.fetch.subphase.highlight.SearchHighlightContext;
 import org.opensearch.search.internal.ContextIndexSearcher;
-import org.opensearch.search.internal.PitReaderContext;
+import org.opensearch.search.internal.FlintContextIndexSearcher;
 import org.opensearch.search.internal.ReaderContext;
 import org.opensearch.search.internal.ScrollContext;
 import org.opensearch.search.internal.SearchContext;
@@ -115,17 +104,16 @@ import org.opensearch.search.suggest.SuggestionSearchContext;
  */
 final class FlintSearchContext extends SearchContext {
 
-    private final ReaderContext readerContext;
     private final Engine.Searcher engineSearcher;
     private final ShardSearchRequest request;
     private final SearchShardTarget shardTarget;
     private final LongSupplier relativeTimeSupplier;
     private SearchType searchType;
     private final BigArrays bigArrays;
-    private final IndexShard indexShard;
+//    private final IndexShard indexShard;
 //    private final ClusterService clusterService;
 //    private final IndexService indexService;
-    private final ContextIndexSearcher searcher;
+    private final FlintContextIndexSearcher searcher;
     private final DfsSearchResult dfsResult;
     private final QuerySearchResult queryResult;
     private final FetchSearchResult fetchResult;
@@ -180,18 +168,20 @@ final class FlintSearchContext extends SearchContext {
 
     private final Map<String, SearchExtBuilder> searchExtBuilders = new HashMap<>();
     private final Map<Class<?>, CollectorManager<? extends Collector, ReduceableSearchResult>> queryCollectorManagers = new HashMap<>();
-    private final QueryShardContext queryShardContext = null;
+    private final QueryShardContext queryShardContext;
     private final FetchPhase fetchPhase;
 
-    private final IndexSettings indexSettings = null;
-    private final MapperService mapperService = null;
-
+    private final IndexSettings indexSettings;
+    private final MapperService mapperService;
+    private final ShardSearchContextId shardSearchContextId;
 
     FlintSearchContext(
         QueryShardContext queryShardContext,
         IndexSettings indexSettings,
         MapperService mapperService,
-        ReaderContext readerContext,
+//        ReaderContext readerContext,
+        Engine.Searcher engineSearcher,
+        ShardSearchContextId shardSearchContextId,
         ShardSearchRequest request,
         SearchShardTarget shardTarget,
         BigArrays bigArrays,
@@ -200,22 +190,19 @@ final class FlintSearchContext extends SearchContext {
         FetchPhase fetchPhase,
         boolean lowLevelCancellation,
         Version minNodeVersion,
-        boolean validate,
         Executor executor
     ) throws IOException {
-        this.readerContext = readerContext;
         this.request = request;
         this.fetchPhase = fetchPhase;
         this.searchType = request.searchType();
         this.shardTarget = shardTarget;
         // SearchContexts use a BigArrays that can circuit break
         this.bigArrays = bigArrays.withCircuitBreaking();
-        this.dfsResult = new DfsSearchResult(readerContext.id(), shardTarget, request);
-        this.queryResult = new QuerySearchResult(readerContext.id(), shardTarget, request);
-        this.fetchResult = new FetchSearchResult(readerContext.id(), shardTarget);
-        this.indexShard = readerContext.indexShard();
-        this.engineSearcher = readerContext.acquireSearcher("search");
-        this.searcher = new ContextIndexSearcher(
+        this.dfsResult = new DfsSearchResult(shardSearchContextId, shardTarget, request);
+        this.queryResult = new QuerySearchResult(shardSearchContextId, shardTarget, request);
+        this.fetchResult = new FetchSearchResult(shardSearchContextId, shardTarget);
+        this.engineSearcher = engineSearcher;
+        this.searcher = new FlintContextIndexSearcher(
             engineSearcher.getIndexReader(),
             engineSearcher.getSimilarity(),
             engineSearcher.getQueryCache(),
@@ -236,6 +223,11 @@ final class FlintSearchContext extends SearchContext {
 //        );
         queryBoost = request.indexBoost();
         this.lowLevelCancellation = lowLevelCancellation;
+
+        this.queryShardContext = queryShardContext;
+        this.indexSettings = indexSettings;
+        this.mapperService = mapperService;
+        this.shardSearchContextId = shardSearchContextId;
     }
 
     @Override
@@ -318,22 +310,23 @@ final class FlintSearchContext extends SearchContext {
             }
         }
 
-        if (sliceBuilder != null && readerContext != null && readerContext instanceof PitReaderContext) {
-            int sliceLimit = indexSettings.getMaxSlicesPerPit();
-            int numSlices = sliceBuilder.getMax();
-            if (numSlices > sliceLimit) {
-                throw new OpenSearchRejectedExecutionException(
-                    "The number of slices ["
-                        + numSlices
-                        + "] is too large. It must "
-                        + "be less than ["
-                        + sliceLimit
-                        + "]. This limit can be set by changing the ["
-                        + IndexSettings.MAX_SLICES_PER_PIT.getKey()
-                        + "] index level setting."
-                );
-            }
-        }
+        // disable slice
+//        if (sliceBuilder != null && readerContext != null && readerContext instanceof PitReaderContext) {
+//            int sliceLimit = indexSettings.getMaxSlicesPerPit();
+//            int numSlices = sliceBuilder.getMax();
+//            if (numSlices > sliceLimit) {
+//                throw new OpenSearchRejectedExecutionException(
+//                    "The number of slices ["
+//                        + numSlices
+//                        + "] is too large. It must "
+//                        + "be less than ["
+//                        + sliceLimit
+//                        + "]. This limit can be set by changing the ["
+//                        + IndexSettings.MAX_SLICES_PER_PIT.getKey()
+//                        + "] index level setting."
+//                );
+//            }
+//        }
         // initialize the filtering alias based on the provided filters
         try {
             final QueryBuilder queryBuilder = request.getAliasFilter().getQueryBuilder();
@@ -395,7 +388,7 @@ final class FlintSearchContext extends SearchContext {
 
     @Override
     public ShardSearchContextId id() {
-        return readerContext.id();
+        return this.shardSearchContextId;
     }
 
     @Override
@@ -428,9 +421,10 @@ final class FlintSearchContext extends SearchContext {
         return queryBoost;
     }
 
+    // todo. unsupported.
     @Override
     public ScrollContext scrollContext() {
-        return readerContext.scrollContext();
+        return null;
     }
 
     @Override
@@ -553,12 +547,12 @@ final class FlintSearchContext extends SearchContext {
 
     @Override
     public ContextIndexSearcher searcher() {
-        return this.searcher;
+        throw new RuntimeException();
     }
 
     @Override
     public IndexShard indexShard() {
-        return this.indexShard;
+        throw new UnsupportedOperationException("indexShard()");
     }
 
     @Override
@@ -905,7 +899,7 @@ final class FlintSearchContext extends SearchContext {
 
     @Override
     public ReaderContext readerContext() {
-        return readerContext;
+        throw new UnsupportedOperationException("readerContext");
     }
 
     // todo, partial result?

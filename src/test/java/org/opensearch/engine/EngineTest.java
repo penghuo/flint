@@ -1,4 +1,4 @@
-package org.opensearch;
+package org.opensearch.engine;
 
 import static org.hamcrest.Matchers.equalTo;
 import static org.opensearch.index.mapper.MapperService.SINGLE_MAPPING_NAME;
@@ -7,7 +7,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -19,11 +18,12 @@ import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.TotalHitCountCollector;
 import org.junit.After;
 import org.junit.Before;
+import org.opensearch.Version;
+import org.opensearch.bak.IndexSettingsModule;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.common.bytes.BytesArray;
 import org.opensearch.common.compress.CompressedXContent;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.common.util.BigArrays;
 import org.opensearch.common.xcontent.XContentType;
 import org.opensearch.env.Environment;
 import org.opensearch.index.IndexSettings;
@@ -34,19 +34,13 @@ import org.opensearch.index.analysis.NamedAnalyzer;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.engine.EngineTestCase;
 import org.opensearch.index.engine.Segment;
-import org.opensearch.index.fielddata.IndexFieldDataCache;
-import org.opensearch.index.fielddata.IndexFieldDataService;
 import org.opensearch.index.mapper.DocumentMapper;
 import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.mapper.ParsedDocument;
 import org.opensearch.index.mapper.SourceToParse;
-import org.opensearch.index.query.QueryShardContext;
 import org.opensearch.index.similarity.SimilarityService;
 import org.opensearch.index.store.Store;
 import org.opensearch.indices.IndicesModule;
-import org.opensearch.indices.breaker.NoneCircuitBreakerService;
-import org.opensearch.indices.fielddata.cache.IndicesFieldDataCache;
-import org.opensearch.search.fetch.subphase.FetchSourcePhase;
 import org.opensearch.search.internal.ContextIndexSearcher;
 
 public class EngineTest extends EngineTestCase {
@@ -274,37 +268,5 @@ public class EngineTest extends EngineTestCase {
         .put(Environment.PATH_DATA_SETTING.getKey(), "/Users/penghuo/tmp/opensearch/data")
         .build();
     return settings;
-  }
-
-  private QueryShardContext queryShardContext(String index) {
-    MapperService mapperService = mapperService(index);
-    IndexSettings indexSettings = IndexSettingsModule.newIndexSettings(index, settings());
-    IndexFieldDataService indexFieldDataService = new IndexFieldDataService(
-        indexSettings,
-        new IndicesFieldDataCache(settings(), new IndexFieldDataCache.Listener() {
-        }),
-        new NoneCircuitBreakerService(),
-        mapperService
-    );
-
-    return new QueryShardContext(
-        0,
-        indexSettings,
-        BigArrays.NON_RECYCLING_INSTANCE,
-        null,
-        indexFieldDataService::getForField,
-        mapperService,
-        null,
-        null,
-        xContentRegistry(),
-        writableRegistry(),
-        null,
-        null,
-        System::currentTimeMillis,
-        null,
-        null,
-        () -> true,
-        null
-    );
   }
 }

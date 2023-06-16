@@ -32,6 +32,14 @@
 
 package org.opensearch.search.internal;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.Executor;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
@@ -62,7 +70,6 @@ import org.apache.lucene.util.BitSetIterator;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.CombinedBitSet;
 import org.apache.lucene.util.SparseFixedBitSet;
-import org.opensearch.cluster.metadata.DataStream;
 import org.opensearch.common.lucene.search.TopDocsAndMaxScore;
 import org.opensearch.core.common.lease.Releasable;
 import org.opensearch.search.DocValueFormat;
@@ -77,21 +84,12 @@ import org.opensearch.search.query.QuerySearchResult;
 import org.opensearch.search.sort.FieldSortBuilder;
 import org.opensearch.search.sort.MinAndMax;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Objects;
-import java.util.Set;
-import java.util.concurrent.Executor;
-
 /**
  * Context-aware extension of {@link IndexSearcher}.
  *
  * @opensearch.internal
  */
-public class ContextIndexSearcher extends IndexSearcher implements Releasable {
+public class FlintContextIndexSearcher extends IndexSearcher implements Releasable {
     /**
      * The interval at which we check for search cancellation when we cannot use
      * a {@link CancellableBulkScorer}. See {@link #intersectScorerAndBitSet}.
@@ -103,7 +101,7 @@ public class ContextIndexSearcher extends IndexSearcher implements Releasable {
     private MutableQueryTimeout cancellable;
     private SearchContext searchContext;
 
-    public ContextIndexSearcher(
+    public FlintContextIndexSearcher(
         IndexReader reader,
         Similarity similarity,
         QueryCache queryCache,
@@ -123,7 +121,7 @@ public class ContextIndexSearcher extends IndexSearcher implements Releasable {
         );
     }
 
-    public ContextIndexSearcher(
+    public FlintContextIndexSearcher(
         IndexReader reader,
         Similarity similarity,
         QueryCache queryCache,
@@ -144,7 +142,7 @@ public class ContextIndexSearcher extends IndexSearcher implements Releasable {
         );
     }
 
-    private ContextIndexSearcher(
+    private FlintContextIndexSearcher(
         IndexReader reader,
         Similarity similarity,
         QueryCache queryCache,
@@ -508,22 +506,6 @@ public class ContextIndexSearcher extends IndexSearcher implements Releasable {
     }
 
     private boolean shouldReverseLeafReaderContexts() {
-        // Time series based workload by default traverses segments in desc order i.e. latest to the oldest order.
-        // This is actually beneficial for search queries to start search on latest segments first for time series workload.
-        // That can slow down ASC order queries on timestamp workload. So to avoid that slowdown, we will reverse leaf
-        // reader order here.
-        if (searchContext != null && searchContext.indexShard().isTimeSeriesDescSortOptimizationEnabled()) {
-            // Only reverse order for asc order sort queries
-            if (searchContext.sort() != null
-                && searchContext.sort().sort != null
-                && searchContext.sort().sort.getSort() != null
-                && searchContext.sort().sort.getSort().length > 0
-                && searchContext.sort().sort.getSort()[0].getReverse() == false
-                && searchContext.sort().sort.getSort()[0].getField() != null
-                && searchContext.sort().sort.getSort()[0].getField().equals(DataStream.TIMESERIES_FIELDNAME)) {
-                return true;
-            }
-        }
         return false;
     }
 }

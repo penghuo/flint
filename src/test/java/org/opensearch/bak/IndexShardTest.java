@@ -1,7 +1,6 @@
-package org.opensearch;
+package org.opensearch.bak;
 
 import static java.util.Collections.emptyMap;
-import static org.opensearch.ClusterServiceUtils.buildNewFakeTransportAddress;
 import static org.opensearch.index.IndexService.IndexCreationContext.CREATE_INDEX;
 
 import java.io.IOException;
@@ -9,6 +8,7 @@ import java.util.Collections;
 import java.util.function.BiFunction;
 import org.junit.Before;
 import org.junit.Test;
+import org.opensearch.Version;
 import org.opensearch.action.index.IndexRequest;
 import org.opensearch.cluster.ClusterModule;
 import org.opensearch.cluster.metadata.IndexMetadata;
