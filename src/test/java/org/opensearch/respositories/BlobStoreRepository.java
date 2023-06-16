@@ -1790,6 +1790,9 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent imp
             writeAtomic(blobContainer(), indexBlob, serializedRepoData, true);
             maybeWriteIndexLatest(newGen);
 
+
+            listener.onResponse(repositoryData);
+
             // Step 3: Update CS to reflect new repository generation.
 //            clusterService.submitStateUpdateTask(
 //                "set safe repository generation [" + metadata.name() + "][" + newGen + "]",
