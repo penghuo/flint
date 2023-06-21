@@ -1,27 +1,29 @@
 package org.opensearch.index.snapshots;
 
 import static java.util.stream.Collectors.toList;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.equalTo;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 import static org.opensearch.Version.V_3_0_0;
 import static org.opensearch.index.mapper.MapperService.SINGLE_MAPPING_NAME;
-import static org.opensearch.repositories.ShardGenerations.NEW_SHARD_GEN;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Stream;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
@@ -38,9 +40,9 @@ import org.opensearch.action.ActionListener;
 import org.opensearch.bak.IndexSettingsModule;
 import org.opensearch.cluster.ClusterModule;
 import org.opensearch.cluster.metadata.IndexMetadata;
-import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.cluster.metadata.Metadata;
 import org.opensearch.cluster.metadata.RepositoryMetadata;
+import org.opensearch.common.UUIDs;
 import org.opensearch.common.bytes.BytesArray;
 import org.opensearch.common.compress.CompressedXContent;
 import org.opensearch.common.network.NetworkModule;
@@ -67,21 +69,24 @@ import org.opensearch.index.shard.ShardId;
 import org.opensearch.index.similarity.SimilarityService;
 import org.opensearch.index.store.Store;
 import org.opensearch.indices.IndicesModule;
-import org.opensearch.repositories.IndexId;
 import org.opensearch.repositories.RepositoryData;
 import org.opensearch.respositories.FsRepository;
 import org.opensearch.search.SearchModule;
-import org.opensearch.snapshots.SnapshotId;
 import org.opensearch.test.DummyShardLock;
 
 public class SnapshotTest extends EngineTestCase {
+
+  static int totalSize = 500;
+  static int shardSize = 5;
+  static int shardIdStart = 0;
+  static String REPO_NAME = "flintsnapshot";
 
   private Settings settings() {
     Settings settings = Settings.builder()
         .put(IndexMetadata.SETTING_VERSION_CREATED, V_3_0_0)
         .put(Environment.PATH_HOME_SETTING.getKey(), "/Users/penghuo/tmp/opensearch")
         .put(Environment.PATH_DATA_SETTING.getKey(), "/Users/penghuo/tmp/opensearch/data")
-        .put(FsRepository.REPOSITORIES_LOCATION_SETTING.getKey(), "flintsnapshot")
+        .put(FsRepository.REPOSITORIES_LOCATION_SETTING.getKey(), REPO_NAME)
         .build();
     return settings;
   }
@@ -159,28 +164,56 @@ public class SnapshotTest extends EngineTestCase {
 
   private String mappings() {
     return "{\n" +
-        "  \"dynamic\": false,\n" +
         "  \"properties\": {\n" +
-        "    \"aInt\": {\n" +
-        "      \"type\": \"integer\"\n" +
+        "    \"year\": {\n" +
+        "      \"type\": \"long\"\n" +
         "    },\n" +
-        "    \"aString\": {\n" +
+        "    \"month\": {\n" +
+        "      \"type\": \"long\"\n" +
+        "    },\n" +
+        "    \"day\": {\n" +
+        "      \"type\": \"long\"\n" +
+        "    },\n" +
+        "    \"eventId\": {\n" +
         "      \"type\": \"keyword\"\n" +
         "    },\n" +
-        "    \"aText\": {\n" +
-        "      \"type\": \"text\"\n" +
+        "    \"statusCode\": {\n" +
+        "      \"type\": \"long\"\n" +
         "    }\n" +
         "  }\n" +
         "}";
   }
 
-  private ShardId shardId(String indexName) {
-    return new ShardId(new Index(indexName, "_na_"), 0);
+  private ShardId shardId(String indexName, int shardId) {
+    return new ShardId(new Index(indexName, "_na_"), shardId);
   }
 
+  /**
+   * {
+   *   "_doc": {
+   *     "dynamic": false,
+   *     "properties": {
+   *       "year": {
+   *         "type": "integer"
+   *       },
+   *       "month": {
+   *         "type": "integer"
+   *       },
+   *       "day": {
+   *         "type": "integer"
+   *       },
+   *       "eventId": {
+   *         "type": "keyword"
+   *       },
+   *       "statusCode": {
+   *         "type": "integer"
+   *       }
+   *     }
+   *   }
+   * }
+   */
   private IndexMetadata indexMetadata(String indexName) throws IOException {
-    String mappings = "{\"_doc\":{\"dynamic\":false," +
-        "\"properties\":{\"aInt\":{\"type\":\"integer\"},\"aString\":{\"type\":\"keyword\"},\"aText\":{\"type\":\"text\"}}}}";
+    String mappings = "{\"_doc\":{\"dynamic\":false,\"properties\":{\"year\":{\"type\":\"long\"},\"month\":{\"type\":\"long\"},\"day\":{\"type\":\"long\"},\"eventId\":{\"type\":\"keyword\"},\"statusCode\":{\"type\":\"long\"}}}}";
     Settings settings = Settings.builder()
         .put(IndexMetadata.SETTING_VERSION_CREATED, V_3_0_0)
         .build();
@@ -188,7 +221,7 @@ public class SnapshotTest extends EngineTestCase {
         .version(V_3_0_0.id)
         .settings(settings)
         .numberOfReplicas(0)
-        .numberOfShards(1)
+        .numberOfShards(shardSize)
         .putMapping(mappings)
         .state(IndexMetadata.State.OPEN)
         .build();
@@ -197,22 +230,25 @@ public class SnapshotTest extends EngineTestCase {
   private IndexSettings indexSettings(String indexName) throws IOException {
     IndexMetadata metadata = indexMetadata(indexName);
     Set<Setting<?>> settingSet = new HashSet<>(IndexScopedSettings.BUILT_IN_INDEX_SETTINGS);
-    return new IndexSettings(metadata, settings(), new IndexScopedSettings(Settings.EMPTY, settingSet));
+    return new IndexSettings(metadata, settings(),
+        new IndexScopedSettings(Settings.EMPTY, settingSet));
   }
 
-  protected Store createStore(String indexName, final Directory directory) throws IOException {
-    return createStore(indexName, indexSettings(indexName), directory);
+  protected Store createStore(String indexName, final Directory directory, int shardId)
+      throws IOException {
+    return createStore(indexName, indexSettings(indexName), directory, shardId);
   }
 
   protected Store createStore(String indexName, final IndexSettings indexSettings,
-                              final Directory directory) throws IOException {
-    return new Store(shardId(indexName), indexSettings, directory, new DummyShardLock(shardId(indexName)));
+                              final Directory directory, int shardId) throws IOException {
+    return new Store(shardId(indexName, shardId), indexSettings, directory,
+        new DummyShardLock(shardId(indexName, shardId)));
   }
 
   @After
   public void clean() {
-    deleteFiles(data);
-    deleteFiles(translog);
+//    deleteFiles(data);
+//    deleteFiles(translog);
   }
 
   @Before
@@ -235,107 +271,336 @@ public class SnapshotTest extends EngineTestCase {
     fsRepository.start();
   }
 
-
   private FsRepository fsRepository;
 
   private Path data;
   private Path translog;
+  private static Random random = new Random();
 
-  @Test
-  public void testSnapshotShard() throws IOException, InterruptedException {
-    String indexName = "foo";
-    String mapping = mappings();
+  private static class InputData {
+    private final int year;
+    private final int month;
+    private final int day;
+    private final String eventId;
+    private final int statusCode;
 
-    try (Store store = createStore(indexName, newFSDirectory(data));
-         Engine engine = createEngine(indexSettings(indexName), store, translog, NoMergePolicy.INSTANCE)) {
-      List<Segment> segments = engine.segments(true);
-      assertThat(segments.isEmpty(), equalTo(true));
+    public static InputData data() {
 
-      ParsedDocument doc = document(indexName, "1", "{\n" +
-          "  \"aInt\": 1,\n" +
-          "  \"aString\": \"a\",\n" +
-          "  \"aText\": \"i am first\"\n" +
-          "}", mapping);
-      engine.index(indexForDoc(doc));
-      engine.refresh("test");
+      LocalDate startDate = LocalDate.of(2023, 1, 1);
+      LocalDate endDate = LocalDate.of(2023, 12, 31);
+      LocalDate randomDate = generateRandomDate(startDate, endDate);
 
-      segments = engine.segments(true);
-      assertThat(segments.size(), equalTo(1));
+      return new InputData(randomDate.getYear(), randomDate.getMonthValue(),
+          randomDate.getDayOfMonth(), UUID.randomUUID().toString(), generateRandomValue(1));
+    }
 
-      ParsedDocument doc2 = document(indexName, "2", "{\n" +
-          "  \"aInt\": 2,\n" +
-          "  \"aString\": \"b\",\n" +
-          "  \"aText\": \"i am second\"\n" +
-          "}", mapping);
-      engine.index(indexForDoc(doc2));
-      engine.refresh("test");
+    public static int generateRandomValue(int percentage) {
+      int randomNumber = random.nextInt(100); // Generate a random number between 0 and 99
 
-      segments = engine.segments(true);
-      assertThat(segments.size(), equalTo(2));
-
-      engine.flush();
-
-      try (Engine.Searcher searcher = engine
-          .acquireSearcher("test", Engine.SearcherScope.INTERNAL)) {
-        final TotalHitCountCollector collector = new TotalHitCountCollector();
-        searcher.search(new MatchAllDocsQuery(), collector);
-        assertEquals(2, collector.getTotalHits());
-
-        System.out.println("finish");
+      if (randomNumber < percentage) {
+        return 404;
+      } else {
+        return 200;
       }
+    }
 
-      SnapshotId snapshotId = new SnapshotId("mySnapshot", UUID.randomUUID().toString());
-      IndexId indexId = new IndexId(indexName, UUID.randomUUID().toString());
-      IndexCommit indexCommit = engine.acquireLastIndexCommit(true).get();
-      String shardStateIdentifier = getShardStateId(indexCommit);
-      IndexShardSnapshotStatus indexShardSnapshotStatus =
-          IndexShardSnapshotStatus.newInitializing(NEW_SHARD_GEN);
-      Version version = V_3_0_0;
-      Map<String, Object> userMetadata = new HashMap<>();
-      final AtomicReference<String> indexGeneration = new AtomicReference<>();
-      ActionListener<String> actionListener = new ActionListener<>() {
-        @Override
-        public void onResponse(String s) {
-          indexGeneration.set(s);
-        }
+    public static LocalDate generateRandomDate(LocalDate startDate, LocalDate endDate) {
+      Random random = new Random();
+      long startEpochDay = startDate.toEpochDay();
+      long endEpochDay = endDate.toEpochDay();
+      long randomDay = startEpochDay + random.nextInt((int) (endEpochDay - startEpochDay));
 
-        @Override
-        public void onFailure(Exception e) {
-          fail(e.getMessage());
-        }
-      };
+      return LocalDate.ofEpochDay(randomDay);
+    }
 
-      CountDownLatch latch = new CountDownLatch(1);
-      ActionListener<RepositoryData> repositoryDataActionListener =new ActionListener<>() {
-        @Override
-        public void onResponse(RepositoryData repo) {
-          System.out.println("repo write success");
-          latch.countDown();
-        }
+    public InputData(int year, int month, int day, String eventId, int statusCode) {
+      this.year = year;
+      this.month = month;
+      this.day = day;
+      this.eventId = eventId;
+      this.statusCode = statusCode;
+    }
 
-        @Override
-        public void onFailure(Exception e) {
-          latch.countDown();
-          fail(e.getMessage());
-        }
-      };
-      Metadata clusterMetaData = new Metadata
-          .Builder()
-          .version(V_3_0_0.id)
-          .clusterUUID("_na_")
-          .indices(Map.of(indexName, indexMetadata(indexName)))
-          .build();
+    public String toJson() {
+      try {
+        ObjectMapper objectMapper = new ObjectMapper();
+        return objectMapper.writeValueAsString(this);
+      } catch (JsonProcessingException e) {
+        throw new RuntimeException(e);
+      }
+    }
 
-      fsRepository.snapshotShard(store, mapperService(indexName), snapshotId, indexId, indexCommit,
-          shardStateIdentifier,
-          indexShardSnapshotStatus, version, userMetadata, clusterMetaData, actionListener, repositoryDataActionListener);
+    public int getYear() {
+      return year;
+    }
 
-      System.out.println("wait...");
-      latch.await();
+    public int getMonth() {
+      return month;
+    }
 
-      System.out.println("success");
+    public int getDay() {
+      return day;
+    }
+
+    public String getEventId() {
+      return eventId;
+    }
+
+    public int getStatusCode() {
+      return statusCode;
     }
   }
 
+
+  /**
+   * create mock data.
+   *
+   * @param size
+   * @return
+   */
+  public List<InputData> mockInputData(int size) {
+    List<InputData> inputDataList = new ArrayList<>();
+
+    for (int i = 0; i < size; i++) {
+      inputDataList.add(InputData.data());
+    }
+    return inputDataList;
+  }
+
+  /**
+   * shard id -> shard data.
+   */
+  public static Map<Integer, List<InputData>> splitList(List<InputData> originalList,
+                                                        int batchSize) {
+    Map<Integer, List<InputData>> splitLists = new HashMap<>();
+    int shardId = shardIdStart;
+    for (int i = 0; i < originalList.size(); i += batchSize) {
+      int endIndex = Math.min(i + batchSize, originalList.size());
+      List<InputData> splitList = originalList.subList(i, endIndex);
+      splitLists.put(shardId, splitList);
+      shardId++;
+    }
+
+    return splitLists;
+  }
+
+  public static void describeData(Map<Integer, List<InputData>> data) {
+    Set<Integer> shardIds = new HashSet<>();
+    for (Map.Entry<Integer, List<InputData>> entry : data.entrySet()) {
+      if (entry.getValue().stream().anyMatch(d -> d.statusCode == 404)) {
+        shardIds.add(entry.getKey());
+      }
+    }
+    System.out.println("========== describe data ==========");
+    System.out.println("shard id include 404");
+
+    for (Integer shardId : shardIds) {
+      System.out.println(shardId);
+    }
+  }
+
+  public static void describeData(int shardId, List<InputData> data) { ;
+    Set<String> eventIDs = new HashSet<>();
+    long errorCount = data.stream().map(v -> {
+      if (v.statusCode == 404) {
+        eventIDs.add(v.eventId);
+      }
+      return v;
+    }).filter(v -> v.statusCode == 404).count();
+
+
+    System.out.println("========== describe data ==========");
+    System.out.printf("shardId: %d has %d rows statsCode=404.%n", shardId, errorCount);
+    for (String eventID : eventIDs) {
+      System.out.println(eventID);
+    }
+    System.out.println("===================================");
+  }
+
+  @Test
+  public void testHackathon() throws IOException, InterruptedException {
+    String indexName = "foo";
+    String mapping = mappings();
+
+    Map<Integer, List<InputData>> shardInputDataMap = splitList(mockInputData(totalSize), batchSize);
+
+    describeData(shardInputDataMap);
+
+    System.out.println("========== start snapshot ==========");
+    MySnapshot snapshot = new MySnapshot(settings(), "myRepository", "mySnapshot", indexName);
+    for (Map.Entry<Integer, List<InputData>> entry : shardInputDataMap.entrySet()) {
+      int shardId = entry.getKey();
+      List<InputData> dataList = entry.getValue();
+
+      Path base = base(shardId);
+      Path dataPath = data(base);
+      Path translogPath = translog(base);
+
+      Store store = createStore(indexName, newFSDirectory(dataPath), shardId);
+      Engine engine = createEngine(indexSettings(indexName), store, translogPath,
+          NoMergePolicy.INSTANCE);
+      indexShard(engine, indexName, mapping, dataList, shardId);
+      snapshot.snapshotShard(indexName, store, engine.acquireLastIndexCommit(true).get());
+    }
+    Metadata clusterMetaData = new Metadata
+        .Builder()
+        .version(V_3_0_0.id)
+        .clusterUUID("_na_")
+        .indices(Map.of(indexName, indexMetadata(indexName)))
+        .build();
+    CountDownLatch latch = new CountDownLatch(1);
+    ActionListener<RepositoryData> listener = new ActionListener<>() {
+      @Override
+      public void onResponse(RepositoryData repo) {
+        System.out.println("finalize Snapshot success");
+        latch.countDown();
+      }
+
+      @Override
+      public void onFailure(Exception e) {
+        latch.countDown();
+        fail(e.getMessage());
+      }
+    };
+    snapshot.finalizeSnapshot(clusterMetaData, listener);
+
+    System.out.println("wait...");
+    latch.await();
+    System.out.println("success");
+  }
+
+  private void indexShard(Engine engine, String indexName, String mapping,
+                          List<InputData> dataList, int shardId) throws IOException {
+    List<Segment> segments = engine.segments(true);
+
+    for (InputData inputData : dataList) {
+      ParsedDocument doc = document(indexName, UUIDs.base64UUID(), inputData.toJson(), mapping);
+      engine.index(indexForDoc(doc));
+    }
+    engine.forceMerge(true, 1, false, true, false, UUIDs.base64UUID());
+    engine.flush();
+
+    segments = engine.segments(true);
+//    System.out.println("shardId: " + shardId);
+//    assertThat(segments.size(), equalTo(1));
+
+    try (Engine.Searcher searcher = engine
+        .acquireSearcher("test", Engine.SearcherScope.INTERNAL)) {
+      final TotalHitCountCollector collector = new TotalHitCountCollector();
+      searcher.search(new MatchAllDocsQuery(), collector);
+      assertEquals(dataList.size(), collector.getTotalHits());
+    }
+  }
+
+  private final String basePath = "/Users/penghuo/tmp/opensearch/foo/";
+  private Path base(int shardId) throws IOException {
+    Path path = Paths.get(basePath + shardId);
+    return Files.createDirectories(path);
+  }
+
+  private Path data(Path basePath) throws IOException {
+    Path path = basePath.resolve("data");
+    return Files.createDirectories(path);
+  }
+  private Path translog(Path basePath) throws IOException {
+    Path path = basePath.resolve("translog");
+    return Files.createDirectories(path);
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /**
+   * Hackathon 2023 Demo.
+   */
+  static int batchSize = 100;
+  static int sleepInterval = 10;
+  static int iteration = 30;
+
+  @Test
+  public void testHackathonSeq() throws IOException, InterruptedException {
+    String indexName = "foo";
+    String mapping = mappings();
+
+    MySnapshot snapshot = new MySnapshot(settings(), "myRepository", "mySnapshot", indexName);
+
+    List<InputData> inputData = mockInputData(batchSize);
+    describeData(0, inputData);
+    snapshotShard(indexName, mapping, 0, inputData, snapshot);
+
+    Metadata clusterMetaData = new Metadata
+        .Builder()
+        .version(V_3_0_0.id)
+        .clusterUUID("_na_")
+        .indices(Map.of(indexName, indexMetadata(indexName)))
+        .build();
+    CountDownLatch latch = new CountDownLatch(1);
+    ActionListener<RepositoryData> listener = new ActionListener<>() {
+      @Override
+      public void onResponse(RepositoryData repo) {
+        System.out.println("finalizeSnapshot success");
+        latch.countDown();
+      }
+
+      @Override
+      public void onFailure(Exception e) {
+        latch.countDown();
+        fail(e.getMessage());
+      }
+    };
+    snapshot.finalizeSnapshot(clusterMetaData, listener);
+
+    latch.await();
+    System.out.println("initialized");
+
+
+    for (int i = 1; i < iteration; i++) {
+      TimeUnit.SECONDS.sleep(sleepInterval);
+
+      inputData = mockInputData(batchSize);
+      describeData(i, inputData);
+      snapshotShard(indexName, mapping, i, inputData, snapshot);
+    }
+  }
+
+  protected void snapshotShard(String indexName, String mapping, int shardId,
+                               List<InputData> dataList, MySnapshot snapshot) throws IOException {
+    Path base = base(shardId);
+    Path dataPath = data(base);
+    Path translogPath = translog(base);
+
+    Store store = createStore(indexName, newFSDirectory(dataPath), shardId);
+    Engine engine = createEngine(indexSettings(indexName), store, translogPath,
+        NoMergePolicy.INSTANCE);
+    indexShard(engine, indexName, mapping, dataList, shardId);
+    snapshot.snapshotShard(indexName, store, engine.acquireLastIndexCommit(true).get());
+  }
 
 }

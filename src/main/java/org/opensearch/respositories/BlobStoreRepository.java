@@ -38,6 +38,8 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.NoSuchFileException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -105,6 +107,7 @@ import org.opensearch.common.compress.CompressorFactory;
 import org.opensearch.common.compress.CompressorType;
 import org.opensearch.common.compress.NotXContentException;
 import org.opensearch.common.io.Streams;
+import org.opensearch.common.lease.Releasable;
 import org.opensearch.common.lucene.Lucene;
 import org.opensearch.common.lucene.store.InputStreamIndexInput;
 import org.opensearch.common.metrics.CounterMetric;
@@ -112,12 +115,10 @@ import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.ByteSizeUnit;
 import org.opensearch.common.unit.ByteSizeValue;
-import org.opensearch.common.util.concurrent.AbstractRunnable;
 import org.opensearch.common.util.concurrent.ConcurrentCollections;
 import org.opensearch.common.xcontent.LoggingDeprecationHandler;
 import org.opensearch.common.xcontent.XContentFactory;
 import org.opensearch.common.xcontent.XContentType;
-import org.opensearch.core.common.lease.Releasable;
 import org.opensearch.core.util.BytesRefUtils;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.core.xcontent.XContentParser;
@@ -2129,23 +2130,6 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent imp
         Map<String, Object> userMetadata,
         ActionListener<String> listener
     ) {
-        throw new UnsupportedOperationException("");
-    }
-
-    public void snapshotShard(
-        Store store,
-        MapperService mapperService,
-        SnapshotId snapshotId,
-        IndexId indexId,
-        IndexCommit snapshotIndexCommit,
-        String shardStateIdentifier,
-        IndexShardSnapshotStatus snapshotStatus,
-        Version repositoryMetaVersion,
-        Map<String, Object> userMetadata,
-        Metadata clusterMetaData,
-        ActionListener<String> listener,
-        ActionListener<RepositoryData> repositoryDataActionListener
-    ) {
         if (isReadOnly()) {
             listener.onFailure(new RepositoryException(metadata.name(), "cannot snapshot shard on a readonly repository"));
             return;
@@ -2316,6 +2300,12 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent imp
                         snapshotId.getUUID(),
                         compressor
                     );
+
+                    // todo. penghuo
+                    System.out.println("update shard.latest with shard id: " + shardId.getId());
+                    String indexPath = indexContainer(indexId).path().buildAsString();
+                    String latestShardPath = getLocationFile().resolve(indexPath + "shard.latest").toString();
+                    ShardIdTranslog.writeShardId(latestShardPath, shardId.id());
                 } catch (IOException e) {
                     throw new IndexShardSnapshotFailedException(shardId, "Failed to write commit point", e);
                 }
@@ -2333,27 +2323,6 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent imp
             for (int i = 0; i < workers; ++i) {
                 executeOneFileSnapshot(store, snapshotId, indexId, snapshotStatus, filesToSnapshot, executor, filesListener);
             }
-
-
-            ShardGenerations shardGenerations = ShardGenerations.builder()
-                .put(indexId, store.shardId().id(), UUID.randomUUID().toString())
-                .build();
-            long repositoryStateId = -1;
-            SnapshotInfo snapshotInfo = new SnapshotInfo(
-                snapshotId,
-                Arrays.asList(indexId.getName()),
-                Collections.EMPTY_LIST,
-                System.currentTimeMillis(),
-                null,
-                System.currentTimeMillis() + 600,
-                1,
-                Collections.EMPTY_LIST,
-                false,
-                Collections.EMPTY_MAP,
-                false
-            );
-            finalizeSnapshot(shardGenerations, repositoryStateId, clusterMetaData, snapshotInfo,
-                Version.V_3_0_0, Function.identity(), repositoryDataActionListener);
         } catch (Exception e) {
             listener.onFailure(e);
         }
@@ -2664,6 +2633,8 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent imp
             throw t;
         }
     }
+
+    abstract Path getLocationFile();
 
     private static void failStoreIfCorrupted(Store store, Exception e) {
         if (Lucene.isCorruptionException(e)) {

@@ -106,6 +106,8 @@ public class FsRepository extends BlobStoreRepository {
 
     private final BlobPath basePath;
 
+    private Path locationFile;
+
     /**
      * Constructs a shared file system repository.
      */
@@ -163,7 +165,7 @@ public class FsRepository extends BlobStoreRepository {
     @Override
     protected BlobStore createBlobStore() throws Exception {
         final String location = REPOSITORIES_LOCATION_SETTING.get(getMetadata().settings());
-        final Path locationFile = resolveRepoFile(location);
+        locationFile = resolveRepoFile(location);
         return new FsBlobStore(bufferSize, locationFile, isReadOnly());
     }
 
@@ -182,4 +184,7 @@ public class FsRepository extends BlobStoreRepository {
     public BlobPath basePath() {
         return basePath;
     }
+
+    @Override
+    public Path getLocationFile() {return locationFile;}
 }
