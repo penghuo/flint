@@ -13,6 +13,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -164,21 +166,28 @@ public class SnapshotTest extends EngineTestCase {
 
   private String mappings() {
     return "{\n" +
-        "  \"properties\": {\n" +
-        "    \"year\": {\n" +
-        "      \"type\": \"long\"\n" +
-        "    },\n" +
-        "    \"month\": {\n" +
-        "      \"type\": \"long\"\n" +
-        "    },\n" +
-        "    \"day\": {\n" +
-        "      \"type\": \"long\"\n" +
-        "    },\n" +
-        "    \"eventId\": {\n" +
-        "      \"type\": \"keyword\"\n" +
-        "    },\n" +
-        "    \"statusCode\": {\n" +
-        "      \"type\": \"long\"\n" +
+        "  \"_doc\": {\n" +
+        "    \"dynamic\": false,\n" +
+        "    \"properties\": {\n" +
+        "      \"timestamp\": {\n" +
+        "        \"type\": \"date\",\n" +
+        "        \"format\": \"strict_date_optional_time||epoch_millis\"\n" +
+        "      },\n" +
+        "      \"year\": {\n" +
+        "        \"type\": \"integer\"\n" +
+        "      },\n" +
+        "      \"month\": {\n" +
+        "        \"type\": \"integer\"\n" +
+        "      },\n" +
+        "      \"day\": {\n" +
+        "        \"type\": \"integer\"\n" +
+        "      },\n" +
+        "      \"eventId\": {\n" +
+        "        \"type\": \"keyword\"\n" +
+        "      },\n" +
+        "      \"statusCode\": {\n" +
+        "        \"type\": \"integer\"\n" +
+        "      }\n" +
         "    }\n" +
         "  }\n" +
         "}";
@@ -213,7 +222,7 @@ public class SnapshotTest extends EngineTestCase {
    * }
    */
   private IndexMetadata indexMetadata(String indexName) throws IOException {
-    String mappings = "{\"_doc\":{\"dynamic\":false,\"properties\":{\"year\":{\"type\":\"long\"},\"month\":{\"type\":\"long\"},\"day\":{\"type\":\"long\"},\"eventId\":{\"type\":\"keyword\"},\"statusCode\":{\"type\":\"long\"}}}}";
+    String mappings = "{\"_doc\":{\"dynamic\":false,\"properties\":{\"timestamp\":{\"type\":\"date\",\"format\":\"strict_date_optional_time||epoch_millis\"},\"year\":{\"type\":\"integer\"},\"month\":{\"type\":\"integer\"},\"day\":{\"type\":\"integer\"},\"eventId\":{\"type\":\"keyword\"},\"statusCode\":{\"type\":\"integer\"}}}}";
     Settings settings = Settings.builder()
         .put(IndexMetadata.SETTING_VERSION_CREATED, V_3_0_0)
         .build();
@@ -278,30 +287,39 @@ public class SnapshotTest extends EngineTestCase {
   private static Random random = new Random();
 
   private static class InputData {
+    private final long timestamp;
     private final int year;
     private final int month;
     private final int day;
     private final String eventId;
     private final int statusCode;
 
-    public static InputData data() {
+    public static InputData data(int dayOfMonth) {
+      LocalDateTime startDateTime = LocalDateTime.of(2023, 6, dayOfMonth, 0, 0, 0);
+      LocalDateTime endDateTime = LocalDateTime.of(2023, 6, dayOfMonth, 23, 59, 59);
 
-      LocalDate startDate = LocalDate.of(2023, 1, 1);
-      LocalDate endDate = LocalDate.of(2023, 12, 31);
-      LocalDate randomDate = generateRandomDate(startDate, endDate);
+      long startTimestamp = startDateTime.toEpochSecond(ZoneOffset.UTC) * 1000;
+      long endTimestamp = endDateTime.toEpochSecond(ZoneOffset.UTC) * 1000;
 
-      return new InputData(randomDate.getYear(), randomDate.getMonthValue(),
-          randomDate.getDayOfMonth(), UUID.randomUUID().toString(), generateRandomValue(1));
+      return new InputData(generateTimestamp(startTimestamp, endTimestamp), startDateTime.getYear(),
+          startDateTime.getMonthValue(),
+          startDateTime.getDayOfMonth(), UUID.randomUUID().toString(), generateRandomValue(1,
+          batchSize * 10));
     }
 
-    public static int generateRandomValue(int percentage) {
-      int randomNumber = random.nextInt(100); // Generate a random number between 0 and 99
+    public static int generateRandomValue(int numerator, int denominator) {
+      int randomNumber = random.nextInt(denominator);
 
-      if (randomNumber < percentage) {
+      if (randomNumber < numerator) {
         return 404;
       } else {
         return 200;
       }
+    }
+
+    private static long generateTimestamp(long startTimestamp, long endTimestamp) {
+      long randomTimestamp = startTimestamp + (long) (Math.random() * (endTimestamp - startTimestamp));
+      return randomTimestamp;
     }
 
     public static LocalDate generateRandomDate(LocalDate startDate, LocalDate endDate) {
@@ -313,7 +331,8 @@ public class SnapshotTest extends EngineTestCase {
       return LocalDate.ofEpochDay(randomDay);
     }
 
-    public InputData(int year, int month, int day, String eventId, int statusCode) {
+    public InputData(long timestamp, int year, int month, int day, String eventId, int statusCode) {
+      this.timestamp = timestamp;
       this.year = year;
       this.month = month;
       this.day = day;
@@ -349,6 +368,14 @@ public class SnapshotTest extends EngineTestCase {
     public int getStatusCode() {
       return statusCode;
     }
+
+    public long getTimestamp() {
+      return timestamp;
+    }
+  }
+
+  public List<InputData> mockInputData(int size) {
+    return mockInputData(size, 1);
   }
 
 
@@ -358,11 +385,11 @@ public class SnapshotTest extends EngineTestCase {
    * @param size
    * @return
    */
-  public List<InputData> mockInputData(int size) {
+  public List<InputData> mockInputData(int size, int dayOfMonth) {
     List<InputData> inputDataList = new ArrayList<>();
 
     for (int i = 0; i < size; i++) {
-      inputDataList.add(InputData.data());
+      inputDataList.add(InputData.data(dayOfMonth));
     }
     return inputDataList;
   }
@@ -416,10 +443,10 @@ public class SnapshotTest extends EngineTestCase {
     System.out.println("\n\n============== describe data ==============\n\n");
 
     System.out.println("Total 404 rows: " +
-        shardIdEventIdMapping.values().stream().map(Set::size).mapToInt(Integer::intValue).sum());
+        shardIdEventIdMapping.values().stream().map(Set::size).mapToInt(Integer::intValue).sum() + "\n");
     for (int i = 0; i <= shardId; i++) {
       if (shardIdEventIdMapping.containsKey(i)) {
-        System.out.println("\nshardId: " + i);
+        System.out.println("shardId: " + i);
         for (String eventID : shardIdEventIdMapping.get(i)) {
           System.out.println("--> " + eventID);
         }
@@ -551,7 +578,7 @@ public class SnapshotTest extends EngineTestCase {
   /**
    * Hackathon 2023 Demo.
    */
-  static int batchSize = 100;
+  static int batchSize = 1000;
   static int sleepInterval = 10;
   static int iteration = 30;
 
@@ -562,7 +589,7 @@ public class SnapshotTest extends EngineTestCase {
 
     MySnapshot snapshot = new MySnapshot(settings(), "myRepository", "mySnapshot", indexName);
 
-    List<InputData> inputData = mockInputData(batchSize);
+    List<InputData> inputData = mockInputData(batchSize, 1);
     Map<Integer, Set<String>> shardIdEventIdMapping = new HashMap<>();
 
     describeData(0, inputData, shardIdEventIdMapping);
@@ -597,7 +624,7 @@ public class SnapshotTest extends EngineTestCase {
     for (int i = 1; i < iteration; i++) {
       TimeUnit.SECONDS.sleep(sleepInterval);
 
-      inputData = mockInputData(batchSize);
+      inputData = mockInputData(batchSize, i + 1);
       snapshotShard(indexName, mapping, i, inputData, snapshot);
 
       describeData(i, inputData, shardIdEventIdMapping);
