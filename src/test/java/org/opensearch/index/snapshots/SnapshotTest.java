@@ -399,7 +399,8 @@ public class SnapshotTest extends EngineTestCase {
     }
   }
 
-  public static void describeData(int shardId, List<InputData> data) { ;
+  public static void describeData(int shardId, List<InputData> data,
+                                  Map<Integer, Set<String>> shardIdEventIdMapping) {
     Set<String> eventIDs = new HashSet<>();
     long errorCount = data.stream().map(v -> {
       if (v.statusCode == 404) {
@@ -408,13 +409,23 @@ public class SnapshotTest extends EngineTestCase {
       return v;
     }).filter(v -> v.statusCode == 404).count();
 
-
-    System.out.println("========== describe data ==========");
-    System.out.printf("shardId: %d has %d rows statsCode=404.%n", shardId, errorCount);
-    for (String eventID : eventIDs) {
-      System.out.println(eventID);
+    if (errorCount > 0) {
+      shardIdEventIdMapping.put(shardId, eventIDs);
     }
-    System.out.println("===================================");
+
+    System.out.println("\n\n============== describe data ==============\n\n");
+
+    System.out.println("Total 404 rows: " +
+        shardIdEventIdMapping.values().stream().map(Set::size).mapToInt(Integer::intValue).sum());
+    for (int i = 0; i <= shardId; i++) {
+      if (shardIdEventIdMapping.containsKey(i)) {
+        System.out.println("\nshardId: " + i);
+        for (String eventID : shardIdEventIdMapping.get(i)) {
+          System.out.println("--> " + eventID);
+        }
+      }
+    }
+    System.out.println("\n\n===========================================\n\n");
   }
 
   @Test
@@ -552,7 +563,9 @@ public class SnapshotTest extends EngineTestCase {
     MySnapshot snapshot = new MySnapshot(settings(), "myRepository", "mySnapshot", indexName);
 
     List<InputData> inputData = mockInputData(batchSize);
-    describeData(0, inputData);
+    Map<Integer, Set<String>> shardIdEventIdMapping = new HashMap<>();
+
+    describeData(0, inputData, shardIdEventIdMapping);
     snapshotShard(indexName, mapping, 0, inputData, snapshot);
 
     Metadata clusterMetaData = new Metadata
@@ -585,8 +598,9 @@ public class SnapshotTest extends EngineTestCase {
       TimeUnit.SECONDS.sleep(sleepInterval);
 
       inputData = mockInputData(batchSize);
-      describeData(i, inputData);
       snapshotShard(indexName, mapping, i, inputData, snapshot);
+
+      describeData(i, inputData, shardIdEventIdMapping);
     }
   }
 
