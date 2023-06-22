@@ -27,7 +27,9 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import org.apache.hc.core5.http.HttpHost;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.index.IndexCommit;
 import org.apache.lucene.index.NoMergePolicy;
@@ -39,7 +41,16 @@ import org.junit.Before;
 import org.junit.Test;
 import org.opensearch.Version;
 import org.opensearch.action.ActionListener;
+import org.opensearch.action.DocWriteResponse;
+import org.opensearch.action.bulk.BulkRequest;
+import org.opensearch.action.index.IndexRequest;
+import org.opensearch.action.index.IndexResponse;
 import org.opensearch.bak.IndexSettingsModule;
+import org.opensearch.client.RequestOptions;
+import org.opensearch.client.RestClient;
+import org.opensearch.client.RestHighLevelClient;
+import org.opensearch.client.indices.CreateIndexRequest;
+import org.opensearch.client.indices.CreateIndexResponse;
 import org.opensearch.cluster.ClusterModule;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.Metadata;
@@ -86,8 +97,8 @@ public class SnapshotTest extends EngineTestCase {
   private Settings settings() {
     Settings settings = Settings.builder()
         .put(IndexMetadata.SETTING_VERSION_CREATED, V_3_0_0)
-        .put(Environment.PATH_HOME_SETTING.getKey(), "/Users/penghuo/tmp/opensearch")
-        .put(Environment.PATH_DATA_SETTING.getKey(), "/Users/penghuo/tmp/opensearch/data")
+        .put(Environment.PATH_HOME_SETTING.getKey(), "/Users/daichen/tmp/opensearch")
+        .put(Environment.PATH_DATA_SETTING.getKey(), "/Users/daichen/tmp/opensearch/data")
         .put(FsRepository.REPOSITORIES_LOCATION_SETTING.getKey(), REPO_NAME)
         .build();
     return settings;
@@ -112,8 +123,8 @@ public class SnapshotTest extends EngineTestCase {
   private MapperService mapperService(String index) {
     Settings settings = Settings.builder()
         .put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT)
-        .put(Environment.PATH_HOME_SETTING.getKey(), "/Users/penghuo/tmp/opensearch")
-        .put(Environment.PATH_DATA_SETTING.getKey(), "/Users/penghuo/tmp/opensearch/data")
+        .put(Environment.PATH_HOME_SETTING.getKey(), "/Users/daichen/tmp/opensearch")
+        .put(Environment.PATH_DATA_SETTING.getKey(), "/Users/daichen/tmp/opensearch/data")
         .build();
     IndexSettings indexSettings = IndexSettingsModule.newIndexSettings(index, settings);
 
@@ -262,8 +273,8 @@ public class SnapshotTest extends EngineTestCase {
 
   @Before
   public void setup() {
-    data = Paths.get("/Users/penghuo/tmp/opensearch/data/index");
-    translog = Paths.get("/Users/penghuo/tmp/opensearch/data/translog");
+    data = Paths.get("/Users/daichen/tmp/opensearch/data/index");
+    translog = Paths.get("/Users/daichen/tmp/opensearch/data/translog");
 
     SearchModule
         searchModule = new SearchModule(settings(), Collections.EMPTY_LIST);
@@ -530,7 +541,7 @@ public class SnapshotTest extends EngineTestCase {
     }
   }
 
-  private final String basePath = "/Users/penghuo/tmp/opensearch/foo/";
+  private final String basePath = "/Users/daichen/tmp/opensearch/alb_logs/";
   private Path base(int shardId) throws IOException {
     Path path = Paths.get(basePath + shardId);
     return Files.createDirectories(path);
@@ -584,7 +595,7 @@ public class SnapshotTest extends EngineTestCase {
 
   @Test
   public void testHackathonSeq() throws IOException, InterruptedException {
-    String indexName = "foo";
+    String indexName = "alb_logs";
     String mapping = mappings();
 
     MySnapshot snapshot = new MySnapshot(settings(), "myRepository", "mySnapshot", indexName);
@@ -594,6 +605,9 @@ public class SnapshotTest extends EngineTestCase {
 
     describeData(0, inputData, shardIdEventIdMapping);
     snapshotShard(indexName, mapping, 0, inputData, snapshot);
+
+    createSkippingIndex();
+    refreshSkippingIndex(0, inputData);
 
     Metadata clusterMetaData = new Metadata
         .Builder()
@@ -628,6 +642,7 @@ public class SnapshotTest extends EngineTestCase {
       snapshotShard(indexName, mapping, i, inputData, snapshot);
 
       describeData(i, inputData, shardIdEventIdMapping);
+      refreshSkippingIndex(i, inputData);
     }
   }
 
@@ -642,6 +657,74 @@ public class SnapshotTest extends EngineTestCase {
         NoMergePolicy.INSTANCE);
     indexShard(engine, indexName, mapping, dataList, shardId);
     snapshot.snapshotShard(indexName, store, engine.acquireLastIndexCommit(true).get());
+  }
+
+  public static final String SKIPPING_INDEX_NAME = "flint_virtual_foo_skipping_index";
+
+  private void createSkippingIndex() {
+    System.out.println("Start creating skipping index: " + SKIPPING_INDEX_NAME);
+
+    try (RestHighLevelClient client = createOpenSearchClient()) {
+      CreateIndexRequest createIndexRequest = new CreateIndexRequest(SKIPPING_INDEX_NAME);
+      String mapping = "{"
+          + "\"mappings\": {"
+          + "  \"_meta\": {"
+          + "    \"indexedColumns\": [\"statusCode\"]"
+          + "  },"
+          + "  \"properties\": {"
+          + "    \"statusCode\": {\"type\": \"integer\"},"
+          + "    \"shardId\": {\"type\": \"integer\"}"
+          + "  }"
+          + "}"
+          + "}";
+      createIndexRequest.source(mapping, XContentType.JSON);
+
+      CreateIndexResponse response = client.indices().create(createIndexRequest, RequestOptions.DEFAULT);
+
+      if (response.isAcknowledged()) {
+        System.out.println("Create skipping index successfully");
+      } else {
+        System.out.println("Failed to create skipping index");
+      }
+
+    } catch (IOException e) {
+      e.printStackTrace();
+    }
+  }
+
+  // Convert shardIdEventIdMapping to OpenSearch bulk request with {key: values.size()} and send it to an OpenSearch cluster
+  private void refreshSkippingIndex(int shardId, List<InputData> batch) {
+    System.out.println("Start refreshing skipping index: shardId " + shardId);
+
+    try (RestHighLevelClient client = createOpenSearchClient()) {
+      Set<Integer> statusCodes = batch.stream()
+          .map(InputData::getStatusCode)
+          .collect(Collectors.toSet());
+      System.out.println("Status code value set: " + statusCodes);
+
+      // Ingest the document
+      Map<String, Object> document = new HashMap<>();
+      document.put("shardId", shardId);
+      document.put("statusCode", new ArrayList<>(statusCodes));
+
+      IndexRequest request = new IndexRequest(SKIPPING_INDEX_NAME).source(document, XContentType.JSON);
+      IndexResponse response = client.index(request, RequestOptions.DEFAULT);
+
+      // Handle the response as needed
+      if (response.getResult() == DocWriteResponse.Result.CREATED || response.getResult() == DocWriteResponse.Result.UPDATED) {
+        System.out.println("Refresh skipping index successfully");
+      } else {
+        // Failed to index document
+        System.out.println("Failed to refresh skipping index: " + response.getResult());
+      }
+    } catch (IOException e) {
+      e.printStackTrace();
+    }
+  }
+
+  private RestHighLevelClient createOpenSearchClient() {
+    return new RestHighLevelClient(
+        RestClient.builder(new HttpHost("http", "localhost", 9200)));
   }
 
 }

@@ -98,7 +98,7 @@ public class FsRepository extends BlobStoreRepository {
         Property.Deprecated
     );
 
-    private static final Path[] repoFiles = {Paths.get("/Users/penghuo/tmp/opensearch")};
+    private static final Path[] repoFiles = {Paths.get("/Users/daichen/tmp/opensearch")};
 
     public static final Setting<String> BASE_PATH_SETTING = Setting.simpleString("base_path");
 
