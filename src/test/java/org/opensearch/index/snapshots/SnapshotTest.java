@@ -659,7 +659,7 @@ public class SnapshotTest extends EngineTestCase {
     snapshot.snapshotShard(indexName, store, engine.acquireLastIndexCommit(true).get());
   }
 
-  public static final String SKIPPING_INDEX_NAME = "flint_virtual_foo_skipping_index";
+  public static final String SKIPPING_INDEX_NAME = "flint_virtual_alb_logs_skipping_index";
 
   private void createSkippingIndex() {
     System.out.println("Start creating skipping index: " + SKIPPING_INDEX_NAME);

@@ -110,7 +110,7 @@ import org.opensearch.threadpool.ThreadPool;
 
 public abstract class EngineTestCase {
 
-  protected final ShardId shardId = new ShardId(new Index("foo", "_na_"), 0);
+  protected final ShardId shardId = new ShardId(new Index("alb_logs", "_na_"), 0);
   protected final AllocationId allocationId = AllocationId.newInitializing();
   protected final PrimaryTermSupplier
       primaryTerm = new PrimaryTermSupplier(1L);
